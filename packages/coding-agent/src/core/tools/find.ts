@@ -55,6 +55,7 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
 	return {
 		name: "find",
 		label: "find",
+		sideEffects: false,
 		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
 		parameters: findSchema,
 		execute: async (

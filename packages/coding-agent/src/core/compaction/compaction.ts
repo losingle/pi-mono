@@ -807,3 +807,86 @@ async function generateTurnPrefixSummary(
 		.map((c) => c.text)
 		.join("\n");
 }
+
+// ============================================================================
+// 规则级降级 Compaction（不依赖 LLM）
+// ============================================================================
+
+const MAX_USER_MESSAGE_PREVIEW_LENGTH = 200;
+
+/**
+ * 当 LLM 不可用时，基于规则生成降级摘要。
+ * 不调用 LLM，纯基于已有数据提取关键信息：
+ * - 文件操作追踪（read/modified files）
+ * - 每条 user 消息的摘要（前 200 字符）
+ * - 每条 assistant 消息的 tool call 列表
+ *
+ * 效果不如 LLM 摘要，但保证 Agent 不会因 compaction 失败而完全卡死。
+ */
+export function compactFallback(preparation: CompactionPreparation): CompactionResult {
+	const { firstKeptEntryId, messagesToSummarize, tokensBefore, fileOps } = preparation;
+
+	const summaryParts: string[] = [];
+
+	summaryParts.push("## Fallback Summary (generated without LLM)\n");
+
+	// 提取用户交互记录
+	const interactions: string[] = [];
+	for (const msg of messagesToSummarize) {
+		if (msg.role === "user") {
+			const text = extractMessageText(msg);
+			if (text) {
+				const preview =
+					text.length > MAX_USER_MESSAGE_PREVIEW_LENGTH
+						? `${text.slice(0, MAX_USER_MESSAGE_PREVIEW_LENGTH)}...`
+						: text;
+				interactions.push(`- User: ${preview}`);
+			}
+		} else if (msg.role === "assistant") {
+			const assistantMsg = msg as AssistantMessage;
+			const toolCalls = assistantMsg.content
+				.filter((c): c is Extract<typeof c, { type: "toolCall" }> => c.type === "toolCall")
+				.map((tc) => tc.name);
+			if (toolCalls.length > 0) {
+				interactions.push(`- Assistant used: ${toolCalls.join(", ")}`);
+			}
+		}
+	}
+
+	if (interactions.length > 0) {
+		summaryParts.push("## Interaction History");
+		summaryParts.push(interactions.join("\n"));
+	}
+
+	// 文件操作追踪
+	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+	const fileOpsText = formatFileOperations(readFiles, modifiedFiles);
+	if (fileOpsText) {
+		summaryParts.push(fileOpsText);
+	}
+
+	const summary = summaryParts.join("\n\n");
+	const details: CompactionDetails = { readFiles, modifiedFiles };
+
+	return {
+		summary,
+		firstKeptEntryId,
+		tokensBefore,
+		details,
+	};
+}
+
+/** 从消息中提取纯文本内容 */
+function extractMessageText(msg: AgentMessage): string {
+	if (msg.role === "user") {
+		const content = (msg as { content: string | Array<{ type: string; text?: string }> }).content;
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text" && !!c.text)
+				.map((c) => c.text)
+				.join(" ");
+		}
+	}
+	return "";
+}

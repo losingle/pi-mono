@@ -4,6 +4,8 @@ import type { Message, Model } from "@mariozechner/pi-ai";
 import { getAgentDir, getDocsPath } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import { AuthStorage } from "./auth-storage.js";
+import type { CompactionDetails } from "./compaction/compaction.js";
+import { estimateContextTokens } from "./compaction/index.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
 import type { ExtensionRunner, LoadExtensionsResult, ToolDefinition } from "./extensions/index.js";
 import { convertToLlm } from "./messages.js";
@@ -11,7 +13,7 @@ import { ModelRegistry } from "./model-registry.js";
 import { findInitialModel } from "./model-resolver.js";
 import type { ResourceLoader } from "./resource-loader.js";
 import { DefaultResourceLoader } from "./resource-loader.js";
-import { SessionManager } from "./session-manager.js";
+import { getLatestCompactionEntry, SessionManager } from "./session-manager.js";
 import { SettingsManager } from "./settings-manager.js";
 import { time } from "./timings.js";
 import {
@@ -295,8 +297,52 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionId: sessionManager.getSessionId(),
 		transformContext: async (messages) => {
 			const runner = extensionRunnerRef.current;
-			if (!runner) return messages;
-			return runner.emitContext(messages);
+			let transformed = runner ? await runner.emitContext(messages) : [...messages];
+
+			// 注入轻量级状态自省消息，让 Agent 感知自身上下文使用情况
+			const currentModel = agent.state.model;
+			if (currentModel?.contextWindow) {
+				const contextEstimate = estimateContextTokens(transformed);
+				const contextWindow = currentModel.contextWindow;
+				const compactionSettings = settingsManager.getCompactionSettings();
+				const compactionThreshold = contextWindow - compactionSettings.reserveTokens;
+				const usagePercent = Math.round((contextEstimate.tokens / contextWindow) * 100);
+
+				// 从最新 compaction entry 获取文件追踪信息
+				const latestCompaction = getLatestCompactionEntry(sessionManager.getBranch());
+				const compactionDetails = latestCompaction?.details as CompactionDetails | undefined;
+
+				let stateText = `[Context: ${Math.round(contextEstimate.tokens / 1000)}k/${Math.round(contextWindow / 1000)}k tokens (${usagePercent}%). Compaction at ${Math.round(compactionThreshold / 1000)}k.]`;
+
+				if (compactionDetails) {
+					const files: string[] = [];
+					if (compactionDetails.modifiedFiles?.length) {
+						files.push(`Modified: ${compactionDetails.modifiedFiles.join(", ")}`);
+					}
+					if (compactionDetails.readFiles?.length) {
+						files.push(`Read: ${compactionDetails.readFiles.join(", ")}`);
+					}
+					if (files.length > 0) {
+						stateText += ` [Files from summary: ${files.join("; ")}]`;
+					}
+				}
+
+				// 仅在上下文使用超过 50% 时注入，避免不必要的 token 开销
+				if (usagePercent >= 50) {
+					transformed = [
+						...transformed,
+						{
+							role: "custom" as const,
+							customType: "systemState",
+							content: stateText,
+							display: false,
+							timestamp: Date.now(),
+						},
+					];
+				}
+			}
+
+			return transformed;
 		},
 		steeringMode: settingsManager.getSteeringMode(),
 		followUpMode: settingsManager.getFollowUpMode(),

@@ -290,6 +290,8 @@ async function streamAssistantResponse(
 
 /**
  * Execute tool calls from an assistant message.
+ * 无副作用（sideEffects !== false）的连续 tool call 会被分组并行执行，
+ * 有副作用的 tool call 作为屏障串行执行。
  */
 async function executeToolCalls(
 	tools: AgentTool<any>[] | undefined,
@@ -302,79 +304,170 @@ async function executeToolCalls(
 	const results: ToolResultMessage[] = [];
 	let steeringMessages: AgentMessage[] | undefined;
 
-	for (let index = 0; index < toolCalls.length; index++) {
-		const toolCall = toolCalls[index];
-		const tool = tools?.find((t) => t.name === toolCall.name);
+	// 将 tool calls 按副作用属性分组：连续的无副作用 tool call 合并为一个并行 batch
+	const batches = groupToolCallBatches(toolCalls, tools);
 
-		stream.push({
-			type: "tool_execution_start",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			args: toolCall.arguments,
-		});
-
-		let result: AgentToolResult<any>;
-		let isError = false;
-
-		try {
-			if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
-
-			const validatedArgs = validateToolArguments(tool, toolCall);
-
-			result = await tool.execute(toolCall.id, validatedArgs, signal, (partialResult) => {
-				stream.push({
-					type: "tool_execution_update",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					args: toolCall.arguments,
-					partialResult,
-				});
-			});
-		} catch (e) {
-			result = {
-				content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
-				details: {},
-			};
-			isError = true;
+	for (const batch of batches) {
+		if (steeringMessages) {
+			// 已被用户中断，跳过剩余 batch 中的所有 tool calls
+			for (const toolCall of batch.toolCalls) {
+				results.push(skipToolCall(toolCall, stream));
+			}
+			continue;
 		}
 
-		stream.push({
-			type: "tool_execution_end",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			result,
-			isError,
-		});
+		if (batch.parallel && batch.toolCalls.length > 1) {
+			// 并行执行无副作用的 tool calls
+			const batchResults = await executeToolCallBatchParallel(batch.toolCalls, tools, signal, stream);
+			results.push(...batchResults);
+		} else {
+			// 串行执行（有副作用或单个 tool call）
+			for (const toolCall of batch.toolCalls) {
+				if (steeringMessages) {
+					results.push(skipToolCall(toolCall, stream));
+					continue;
+				}
 
-		const toolResultMessage: ToolResultMessage = {
-			role: "toolResult",
-			toolCallId: toolCall.id,
-			toolName: toolCall.name,
-			content: result.content,
-			details: result.details,
-			isError,
-			timestamp: Date.now(),
-		};
+				const { result: toolResult, isError } = await executeSingleToolCall(toolCall, tools, signal, stream);
+				const toolResultMessage = createToolResultMessage(toolCall, toolResult, isError);
+				results.push(toolResultMessage);
+				stream.push({ type: "message_start", message: toolResultMessage });
+				stream.push({ type: "message_end", message: toolResultMessage });
 
-		results.push(toolResultMessage);
-		stream.push({ type: "message_start", message: toolResultMessage });
-		stream.push({ type: "message_end", message: toolResultMessage });
+				// 每个串行 tool call 后检查 steering
+				if (getSteeringMessages) {
+					const steering = await getSteeringMessages();
+					if (steering.length > 0) {
+						steeringMessages = steering;
+					}
+				}
+			}
+		}
 
-		// Check for steering messages - skip remaining tools if user interrupted
-		if (getSteeringMessages) {
+		// 并行 batch 完成后也检查 steering
+		if (!steeringMessages && batch.parallel && batch.toolCalls.length > 1 && getSteeringMessages) {
 			const steering = await getSteeringMessages();
 			if (steering.length > 0) {
 				steeringMessages = steering;
-				const remainingCalls = toolCalls.slice(index + 1);
-				for (const skipped of remainingCalls) {
-					results.push(skipToolCall(skipped, stream));
-				}
-				break;
 			}
 		}
 	}
 
 	return { toolResults: results, steeringMessages };
+}
+
+/** 将 tool calls 按副作用属性分组为可并行/串行的 batch */
+function groupToolCallBatches(
+	toolCalls: Array<Extract<AssistantMessage["content"][number], { type: "toolCall" }>>,
+	tools: AgentTool<any>[] | undefined,
+): Array<{ parallel: boolean; toolCalls: typeof toolCalls }> {
+	const batches: Array<{ parallel: boolean; toolCalls: typeof toolCalls }> = [];
+
+	for (const toolCall of toolCalls) {
+		const tool = tools?.find((t) => t.name === toolCall.name);
+		// sideEffects 默认 true（保守策略），只有显式标记 false 的才能并行
+		const hasSideEffects = tool?.sideEffects !== false;
+
+		if (!hasSideEffects) {
+			// 无副作用：尝试追加到上一个并行 batch
+			const lastBatch = batches[batches.length - 1];
+			if (lastBatch?.parallel) {
+				lastBatch.toolCalls.push(toolCall);
+			} else {
+				batches.push({ parallel: true, toolCalls: [toolCall] });
+			}
+		} else {
+			// 有副作用：独立为一个串行 batch
+			batches.push({ parallel: false, toolCalls: [toolCall] });
+		}
+	}
+
+	return batches;
+}
+
+/** 执行单个 tool call，返回结果 */
+async function executeSingleToolCall(
+	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
+	tools: AgentTool<any>[] | undefined,
+	signal: AbortSignal | undefined,
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+): Promise<{ result: AgentToolResult<any>; isError: boolean }> {
+	const tool = tools?.find((t) => t.name === toolCall.name);
+
+	stream.push({
+		type: "tool_execution_start",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		args: toolCall.arguments,
+	});
+
+	let result: AgentToolResult<any>;
+	let isError = false;
+
+	try {
+		if (!tool) throw new Error(`Tool ${toolCall.name} not found`);
+		const validatedArgs = validateToolArguments(tool, toolCall);
+		result = await tool.execute(toolCall.id, validatedArgs, signal, (partialResult) => {
+			stream.push({
+				type: "tool_execution_update",
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args: toolCall.arguments,
+				partialResult,
+			});
+		});
+	} catch (e) {
+		result = {
+			content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
+			details: {},
+		};
+		isError = true;
+	}
+
+	stream.push({
+		type: "tool_execution_end",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		result,
+		isError,
+	});
+
+	return { result, isError };
+}
+
+/** 并行执行一组无副作用的 tool calls */
+async function executeToolCallBatchParallel(
+	toolCalls: Array<Extract<AssistantMessage["content"][number], { type: "toolCall" }>>,
+	tools: AgentTool<any>[] | undefined,
+	signal: AbortSignal | undefined,
+	stream: EventStream<AgentEvent, AgentMessage[]>,
+): Promise<ToolResultMessage[]> {
+	const promises = toolCalls.map(async (toolCall) => {
+		const { result, isError } = await executeSingleToolCall(toolCall, tools, signal, stream);
+		const toolResultMessage = createToolResultMessage(toolCall, result, isError);
+		stream.push({ type: "message_start", message: toolResultMessage });
+		stream.push({ type: "message_end", message: toolResultMessage });
+		return toolResultMessage;
+	});
+
+	return Promise.all(promises);
+}
+
+/** 创建 ToolResultMessage */
+function createToolResultMessage(
+	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
+	result: AgentToolResult<any>,
+	isError: boolean,
+): ToolResultMessage {
+	return {
+		role: "toolResult",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		content: result.content,
+		details: result.details,
+		isError,
+		timestamp: Date.now(),
+	};
 }
 
 function skipToolCall(

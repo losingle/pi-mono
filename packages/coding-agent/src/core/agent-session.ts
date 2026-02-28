@@ -35,6 +35,7 @@ import {
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
+	compactFallback,
 	estimateContextTokens,
 	generateBranchSummary,
 	prepareCompaction,
@@ -1737,6 +1738,49 @@ export class AgentSession {
 			}
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+
+			// 尝试规则级降级 compaction：不依赖 LLM，基于已有数据生成摘要
+			const settings = this.settingsManager.getCompactionSettings();
+			const pathEntries = this.sessionManager.getBranch();
+			const preparation = prepareCompaction(pathEntries, settings);
+
+			if (preparation) {
+				try {
+					const fallbackResult = compactFallback(preparation);
+					this.sessionManager.appendCompaction(
+						fallbackResult.summary,
+						fallbackResult.firstKeptEntryId,
+						fallbackResult.tokensBefore,
+						fallbackResult.details,
+						false,
+					);
+					const sessionContext = this.sessionManager.buildSessionContext();
+					this.agent.replaceMessages(sessionContext.messages);
+
+					this._emit({
+						type: "auto_compaction_end",
+						result: fallbackResult,
+						aborted: false,
+						willRetry,
+						errorMessage: `LLM compaction failed (${errorMessage}), used rule-based fallback`,
+					});
+
+					if (willRetry) {
+						const messages = this.agent.state.messages;
+						const lastMsg = messages[messages.length - 1];
+						if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
+							this.agent.replaceMessages(messages.slice(0, -1));
+						}
+						setTimeout(() => {
+							this.agent.continue().catch(() => {});
+						}, 100);
+					}
+					return;
+				} catch {
+					// 降级也失败了，走到下面的错误报告
+				}
+			}
+
 			this._emit({
 				type: "auto_compaction_end",
 				result: undefined,

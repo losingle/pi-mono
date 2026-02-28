@@ -157,6 +157,12 @@ export type AgentToolUpdateCallback<T = any> = (partialResult: AgentToolResult<T
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any> extends Tool<TParameters> {
 	// A human-readable label for the tool to be displayed in UI
 	label: string;
+	/**
+	 * 标记该工具是否有副作用（默认 true，保守策略）。
+	 * 无副作用的工具（如 read、grep、find、ls）可以被 agent loop 并行执行，
+	 * 有副作用的工具（如 edit、write、bash）必须串行执行。
+	 */
+	sideEffects?: boolean;
 	execute: (
 		toolCallId: string,
 		params: Static<TParameters>,
