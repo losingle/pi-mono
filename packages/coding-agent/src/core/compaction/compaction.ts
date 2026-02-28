@@ -33,6 +33,63 @@ import {
 export interface CompactionDetails {
 	readFiles: string[];
 	modifiedFiles: string[];
+	/** 进行中的任务（从 "### In Progress" 和 "## Next Steps" 提取） */
+	pendingTasks?: string[];
+	/** 关键决策（从 "## Key Decisions" 提取） */
+	decisions?: string[];
+}
+
+/**
+ * 从生成的 markdown 摘要中提取结构化字段。
+ * 解析 "### In Progress"、"## Next Steps"、"## Key Decisions" 三个区域。
+ */
+function parseSummaryStructure(summary: string): Pick<CompactionDetails, "pendingTasks" | "decisions"> {
+	const lines = summary.split("\n");
+	const pendingTasks: string[] = [];
+	const decisions: string[] = [];
+
+	let currentSection: "inProgress" | "nextSteps" | "decisions" | null = null;
+
+	for (const raw of lines) {
+		const line = raw.trim();
+
+		// 检测章节标题切换
+		if (line.startsWith("### In Progress")) {
+			currentSection = "inProgress";
+			continue;
+		}
+		if (line.startsWith("## Next Steps")) {
+			currentSection = "nextSteps";
+			continue;
+		}
+		if (line.startsWith("## Key Decisions")) {
+			currentSection = "decisions";
+			continue;
+		}
+		// 遇到新的 ## 或 ### 标题时结束当前区域
+		if (line.startsWith("##")) {
+			currentSection = null;
+			continue;
+		}
+
+		// 提取列表项
+		const listMatch = line.match(/^[-*]\s+(?:\[.\]\s+)?(.+)/);
+		if (!listMatch) continue;
+
+		const content = listMatch[1].trim();
+		if (!content || content === "(none)") continue;
+
+		if (currentSection === "inProgress" || currentSection === "nextSteps") {
+			pendingTasks.push(content);
+		} else if (currentSection === "decisions") {
+			decisions.push(content);
+		}
+	}
+
+	return {
+		pendingTasks: pendingTasks.length > 0 ? pendingTasks : undefined,
+		decisions: decisions.length > 0 ? decisions : undefined,
+	};
 }
 
 /**
@@ -754,9 +811,12 @@ export async function compact(
 		);
 	}
 
-	// Compute file lists and append to summary
+	// 计算文件列表并追加到摘要
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	summary += formatFileOperations(readFiles, modifiedFiles);
+
+	// 从摘要文本中提取结构化字段
+	const { pendingTasks, decisions } = parseSummaryStructure(summary);
 
 	if (!firstKeptEntryId) {
 		throw new Error("First kept entry has no UUID - session may need migration");
@@ -766,7 +826,7 @@ export async function compact(
 		summary,
 		firstKeptEntryId,
 		tokensBefore,
-		details: { readFiles, modifiedFiles } as CompactionDetails,
+		details: { readFiles, modifiedFiles, pendingTasks, decisions } as CompactionDetails,
 	};
 }
 
@@ -866,7 +926,10 @@ export function compactFallback(preparation: CompactionPreparation): CompactionR
 	}
 
 	const summary = summaryParts.join("\n\n");
-	const details: CompactionDetails = { readFiles, modifiedFiles };
+	// fallback compaction 没有结构化的 "In Progress"/"Key Decisions" 段落，
+	// 但仍尝试解析以保持一致性
+	const { pendingTasks, decisions } = parseSummaryStructure(summary);
+	const details: CompactionDetails = { readFiles, modifiedFiles, pendingTasks, decisions };
 
 	return {
 		summary,

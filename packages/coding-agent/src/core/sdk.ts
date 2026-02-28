@@ -325,6 +325,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					if (files.length > 0) {
 						stateText += ` [Files from summary: ${files.join("; ")}]`;
 					}
+					if (compactionDetails.pendingTasks?.length) {
+						stateText += ` [Pending: ${compactionDetails.pendingTasks.join("; ")}]`;
+					}
+					if (compactionDetails.decisions?.length) {
+						stateText += ` [Decisions: ${compactionDetails.decisions.join("; ")}]`;
+					}
 				}
 
 				// 仅在上下文使用超过 50% 时注入，避免不必要的 token 开销

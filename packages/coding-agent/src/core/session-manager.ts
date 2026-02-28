@@ -792,8 +792,10 @@ export class SessionManager {
 		if (!this.persist || !this.sessionFile) return;
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
-		if (!hasAssistant) {
-			// Mark as not flushed so when assistant arrives, all entries get written
+		// 当 user 消息入 state 后立即 flush，防止 Agent 崩溃时丢失用户输入
+		const isUserMessage = entry.type === "message" && entry.message.role === "user";
+		if (!hasAssistant && !isUserMessage) {
+			// 非 user 消息在 assistant 到达前不写入（保持原有延迟写入语义）
 			this.flushed = false;
 			return;
 		}

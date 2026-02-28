@@ -710,7 +710,25 @@ class TreeList implements Component {
 			}
 			case "compaction": {
 				const tokens = Math.round(entry.tokensBefore / 1000);
-				result = theme.fg("borderAccent", `[compaction: ${tokens}k tokens]`);
+				// 区分 compaction 类型：extension hook / fallback / LLM
+				const compType = entry.fromHook
+					? "ext compaction"
+					: entry.summary?.includes("Fallback Summary")
+						? "fallback compaction"
+						: "compaction";
+				let label = `[${compType}: ${tokens}k tokens]`;
+				// 显示文件追踪信息和结构化数据
+				const details = entry.details as
+					| { readFiles?: string[]; modifiedFiles?: string[]; pendingTasks?: string[]; decisions?: string[] }
+					| undefined;
+				if (details) {
+					const parts: string[] = [];
+					if (details.modifiedFiles?.length) parts.push(`M:${details.modifiedFiles.length}`);
+					if (details.readFiles?.length) parts.push(`R:${details.readFiles.length}`);
+					if (details.pendingTasks?.length) parts.push(`T:${details.pendingTasks.length}`);
+					if (parts.length > 0) label += ` (${parts.join(" ")})`;
+				}
+				result = theme.fg("borderAccent", label);
 				break;
 			}
 			case "branch_summary":

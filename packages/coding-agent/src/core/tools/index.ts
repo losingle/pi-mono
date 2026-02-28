@@ -41,6 +41,14 @@ export {
 	lsTool,
 } from "./ls.js";
 export {
+	createOutlineTool,
+	type OutlineOperations,
+	type OutlineToolDetails,
+	type OutlineToolInput,
+	type OutlineToolOptions,
+	outlineTool,
+} from "./outline.js";
+export {
 	createReadTool,
 	type ReadOperations,
 	type ReadToolDetails,
@@ -72,6 +80,7 @@ import { createEditTool, editTool } from "./edit.js";
 import { createFindTool, findTool } from "./find.js";
 import { createGrepTool, grepTool } from "./grep.js";
 import { createLsTool, lsTool } from "./ls.js";
+import { createOutlineTool, outlineTool } from "./outline.js";
 import { createReadTool, type ReadToolOptions, readTool } from "./read.js";
 import { createWriteTool, writeTool } from "./write.js";
 
@@ -82,7 +91,7 @@ export type Tool = AgentTool<any>;
 export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool];
 
 // Read-only tools for exploration without modification (using process.cwd())
-export const readOnlyTools: Tool[] = [readTool, grepTool, findTool, lsTool];
+export const readOnlyTools: Tool[] = [readTool, grepTool, findTool, lsTool, outlineTool];
 
 // All available tools (using process.cwd())
 export const allTools = {
@@ -93,6 +102,7 @@ export const allTools = {
 	grep: grepTool,
 	find: findTool,
 	ls: lsTool,
+	outline: outlineTool,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -120,7 +130,13 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
  * Create read-only tools configured for a specific working directory.
  */
 export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[] {
-	return [createReadTool(cwd, options?.read), createGrepTool(cwd), createFindTool(cwd), createLsTool(cwd)];
+	return [
+		createReadTool(cwd, options?.read),
+		createGrepTool(cwd),
+		createFindTool(cwd),
+		createLsTool(cwd),
+		createOutlineTool(cwd),
+	];
 }
 
 /**
@@ -135,5 +151,6 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		grep: createGrepTool(cwd),
 		find: createFindTool(cwd),
 		ls: createLsTool(cwd),
+		outline: createOutlineTool(cwd),
 	};
 }

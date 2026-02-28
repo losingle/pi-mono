@@ -1,12 +1,15 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "@sinclair/typebox";
-import { spawnSync } from "child_process";
-import { existsSync } from "fs";
-import { globSync } from "glob";
+import { execFile } from "child_process";
+import { access } from "fs/promises";
+import { glob } from "glob";
 import path from "path";
+import { promisify } from "util";
 import { ensureTool } from "../../utils/tools-manager.js";
 import { resolveToCwd } from "./path-utils.js";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.js";
+
+const execFileAsync = promisify(execFile);
 
 const findSchema = Type.Object({
 	pattern: Type.String({
@@ -37,9 +40,16 @@ export interface FindOperations {
 }
 
 const defaultFindOperations: FindOperations = {
-	exists: existsSync,
+	exists: async (absolutePath: string) => {
+		try {
+			await access(absolutePath);
+			return true;
+		} catch {
+			return false;
+		}
+	},
 	glob: (_pattern, _searchCwd, _options) => {
-		// This is a placeholder - actual fd execution happens in execute
+		// 占位 — 默认路径使用 fd 执行搜索
 		return [];
 	},
 };
@@ -153,15 +163,18 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
 							String(effectiveLimit),
 						];
 
-						// Include .gitignore files
+						// 收集 .gitignore 文件
 						const gitignoreFiles = new Set<string>();
 						const rootGitignore = path.join(searchPath, ".gitignore");
-						if (existsSync(rootGitignore)) {
+						try {
+							await access(rootGitignore);
 							gitignoreFiles.add(rootGitignore);
+						} catch {
+							// rootGitignore 不存在，跳过
 						}
 
 						try {
-							const nestedGitignores = globSync("**/.gitignore", {
+							const nestedGitignores = await glob("**/.gitignore", {
 								cwd: searchPath,
 								dot: true,
 								absolute: true,
@@ -171,7 +184,7 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
 								gitignoreFiles.add(file);
 							}
 						} catch {
-							// Ignore glob errors
+							// 忽略 glob 错误
 						}
 
 						for (const gitignorePath of gitignoreFiles) {
@@ -180,22 +193,34 @@ export function createFindTool(cwd: string, options?: FindToolOptions): AgentToo
 
 						args.push(pattern, searchPath);
 
-						const result = spawnSync(fdPath, args, {
-							encoding: "utf-8",
-							maxBuffer: 10 * 1024 * 1024,
-						});
+						// 异步执行 fd
+						let fdStdout: string;
+						let fdStderr: string;
+						let fdExitCode: number | null = 0;
+						try {
+							const { stdout, stderr } = await execFileAsync(fdPath, args, {
+								encoding: "utf-8",
+								maxBuffer: 10 * 1024 * 1024,
+							});
+							fdStdout = stdout ?? "";
+							fdStderr = stderr ?? "";
+						} catch (e: any) {
+							// execFile 在非 0 退出码时 reject，但 fd 可能在有输出的同时返回非 0
+							fdStdout = e.stdout ?? "";
+							fdStderr = e.stderr ?? "";
+							fdExitCode = e.code ?? 1;
+							if (!fdStdout && e.message) {
+								reject(new Error(`Failed to run fd: ${e.message}`));
+								return;
+							}
+						}
 
 						signal?.removeEventListener("abort", onAbort);
 
-						if (result.error) {
-							reject(new Error(`Failed to run fd: ${result.error.message}`));
-							return;
-						}
+						const output = fdStdout.trim();
 
-						const output = result.stdout?.trim() || "";
-
-						if (result.status !== 0) {
-							const errorMsg = result.stderr?.trim() || `fd exited with code ${result.status}`;
+						if (fdExitCode !== 0) {
+							const errorMsg = fdStderr.trim() || `fd exited with code ${fdExitCode}`;
 							if (!output) {
 								reject(new Error(errorMsg));
 								return;

@@ -209,7 +209,8 @@ async function streamAssistantResponse(
 	streamFn?: StreamFn,
 ): Promise<AssistantMessage> {
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
-	let messages = context.messages;
+	// 浅拷贝保护：防止 transformContext 实现意外 mutate 原始 state 的 messages 数组
+	let messages = [...context.messages];
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}

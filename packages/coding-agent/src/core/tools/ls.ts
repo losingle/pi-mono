@@ -1,6 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "@sinclair/typebox";
-import { existsSync, readdirSync, statSync } from "fs";
+import { access, readdir, stat } from "fs/promises";
 import nodePath from "path";
 import { resolveToCwd } from "./path-utils.js";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.js";
@@ -33,9 +33,16 @@ export interface LsOperations {
 }
 
 const defaultLsOperations: LsOperations = {
-	exists: existsSync,
-	stat: statSync,
-	readdir: readdirSync,
+	exists: async (absolutePath: string) => {
+		try {
+			await access(absolutePath);
+			return true;
+		} catch {
+			return false;
+		}
+	},
+	stat: stat,
+	readdir: readdir as (absolutePath: string) => Promise<string[]>,
 };
 
 export interface LsToolOptions {
