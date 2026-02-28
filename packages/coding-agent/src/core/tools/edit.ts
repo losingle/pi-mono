@@ -164,7 +164,7 @@ export function createEditTool(cwd: string, options?: EditToolOptions): AgentToo
 						}
 
 						// Perform replacement using the matched text position
-						// When fuzzy matching was used, contentForReplacement is the normalized version
+						// contentForReplacement 始终是原始内容（fuzzy match 的位置已映射回原始空间）
 						const baseContent = matchResult.contentForReplacement;
 						const newContent =
 							baseContent.substring(0, matchResult.index) +

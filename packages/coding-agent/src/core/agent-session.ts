@@ -81,6 +81,7 @@ import { BUILTIN_SLASH_COMMANDS, type SlashCommandInfo, type SlashCommandLocatio
 import { buildSystemPrompt } from "./system-prompt.js";
 import type { BashOperations } from "./tools/bash.js";
 import { createAllTools } from "./tools/index.js";
+import { createSessionSearchTool } from "./tools/session-search.js";
 
 // ============================================================================
 // Skill Block Parsing
@@ -2018,6 +2019,10 @@ export class AgentSession {
 
 		this._baseToolRegistry = new Map(Object.entries(baseTools).map(([name, tool]) => [name, tool as AgentTool]));
 
+		// 注入 session_search 工具（需要 SessionManager，无法通过 createAllTools 创建）
+		const sessionSearchTool = createSessionSearchTool(this.sessionManager);
+		this._baseToolRegistry.set(sessionSearchTool.name, sessionSearchTool as unknown as AgentTool);
+
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {
 			for (const [name, value] of options.flagValues) {
@@ -2061,7 +2066,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write"];
+			: ["read", "bash", "edit", "write", "session_search"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		const activeToolNameSet = new Set<string>(baseActiveToolNames);
 		if (options.includeAllExtensionTools) {

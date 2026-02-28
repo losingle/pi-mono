@@ -53,6 +53,7 @@ import {
 } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
 import type { CompactionResult } from "../../core/compaction/index.js";
+import { estimateContextTokens } from "../../core/compaction/index.js";
 import type {
 	ExtensionContext,
 	ExtensionRunner,
@@ -65,7 +66,7 @@ import { type AppAction, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { resolveModelScope } from "../../core/model-resolver.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
-import { type SessionContext, SessionManager } from "../../core/session-manager.js";
+import { buildSessionContext, type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
@@ -3429,6 +3430,23 @@ export class InteractiveMode {
 			return;
 		}
 
+		// 构建 token 预估回调，带缓存（避免每次渲染重复计算）
+		const entries = this.sessionManager.getEntries();
+		const byId = new Map(entries.map((e) => [e.id, e]));
+		const tokenCache = new Map<string, number>();
+		const estimateTokensFn = (entryId: string): number | undefined => {
+			const cached = tokenCache.get(entryId);
+			if (cached !== undefined) return cached;
+			try {
+				const ctx = buildSessionContext(entries, entryId, byId);
+				const estimate = estimateContextTokens(ctx.messages);
+				tokenCache.set(entryId, estimate.tokens);
+				return estimate.tokens;
+			} catch {
+				return undefined;
+			}
+		};
+
 		this.showSelector((done) => {
 			const selector = new TreeSelectorComponent(
 				tree,
@@ -3538,6 +3556,7 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				initialSelectedId,
+				estimateTokensFn,
 			);
 			return { component: selector, focus: selector };
 		});

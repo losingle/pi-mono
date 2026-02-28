@@ -244,6 +244,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const initialActiveToolNames: ToolName[] = options.tools
 		? options.tools.map((t) => t.name).filter((n): n is ToolName => n in allTools)
 		: defaultActiveToolNames;
+	// session_search 总是默认激活（需要 SessionManager，不在 allTools 静态注册表中）
+	if (!initialActiveToolNames.includes("session_search" as ToolName)) {
+		initialActiveToolNames.push("session_search" as ToolName);
+	}
 
 	let agent: Agent;
 

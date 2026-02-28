@@ -60,6 +60,8 @@ class TreeList implements Component {
 	private multipleRoots = false;
 	private activePathIds: Set<string> = new Set();
 	private lastSelectedId: string | null = null;
+	/** 可选的 token 预估回调，为指定 entryId 返回预估上下文 token 数 */
+	private estimateTokens?: (entryId: string) => number | undefined;
 
 	public onSelect?: (entryId: string) => void;
 	public onCancel?: () => void;
@@ -70,9 +72,11 @@ class TreeList implements Component {
 		currentLeafId: string | null,
 		maxVisibleLines: number,
 		initialSelectedId?: string,
+		estimateTokens?: (entryId: string) => number | undefined,
 	) {
 		this.currentLeafId = currentLeafId;
 		this.maxVisibleLines = maxVisibleLines;
+		this.estimateTokens = estimateTokens;
 		this.multipleRoots = tree.length > 1;
 		this.flatNodes = this.flattenTree(tree);
 		this.buildActivePath();
@@ -644,12 +648,17 @@ class TreeList implements Component {
 			lines.push(truncateToWidth(line, width));
 		}
 
-		lines.push(
-			truncateToWidth(
-				theme.fg("muted", `  (${this.selectedIndex + 1}/${this.filteredNodes.length})${this.getFilterLabel()}`),
-				width,
-			),
-		);
+		// 底部状态行：位置 + 过滤器 + token 预估
+		const selected = this.filteredNodes[this.selectedIndex];
+		let statusText = `  (${this.selectedIndex + 1}/${this.filteredNodes.length})${this.getFilterLabel()}`;
+		if (selected && this.estimateTokens) {
+			const tokens = this.estimateTokens(selected.node.entry.id);
+			if (tokens !== undefined) {
+				const tokenStr = tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : `${tokens}`;
+				statusText += `  导航到此节点: ~${tokenStr} tokens`;
+			}
+		}
+		lines.push(truncateToWidth(theme.fg("muted", statusText), width));
 
 		return lines;
 	}
@@ -1019,13 +1028,14 @@ export class TreeSelectorComponent extends Container implements Focusable {
 		onCancel: () => void,
 		onLabelChange?: (entryId: string, label: string | undefined) => void,
 		initialSelectedId?: string,
+		estimateTokens?: (entryId: string) => number | undefined,
 	) {
 		super();
 
 		this.onLabelChangeCallback = onLabelChange;
 		const maxVisibleLines = Math.max(5, Math.floor(terminalHeight / 2));
 
-		this.treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialSelectedId);
+		this.treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialSelectedId, estimateTokens);
 		this.treeList.onSelect = onSelect;
 		this.treeList.onCancel = onCancel;
 		this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);

@@ -16,6 +16,30 @@ function getTempFilePath(): string {
 	return join(tmpdir(), `pi-bash-${id}.log`);
 }
 
+/**
+ * 检查 stderr 内容是否已大部分出现在 tail 输出中。
+ * 通过采样 stderr 的首尾行检查：如果超过 70% 的 stderr 行出现在 tail 中，认为已可见。
+ */
+function isStderrVisibleInTail(stderrText: string, tailText: string): boolean {
+	const stderrLines = stderrText.split("\n").filter((l) => l.trim().length > 0);
+	if (stderrLines.length === 0) return true;
+
+	// 采样检查：首 5 行 + 尾 5 行
+	const sampleSize = Math.min(5, stderrLines.length);
+	const headSample = stderrLines.slice(0, sampleSize);
+	const tailSample = stderrLines.slice(-sampleSize);
+	const samples = [...new Set([...headSample, ...tailSample])];
+
+	let visibleCount = 0;
+	for (const line of samples) {
+		if (tailText.includes(line)) {
+			visibleCount++;
+		}
+	}
+
+	return visibleCount / samples.length >= 0.7;
+}
+
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
@@ -45,6 +69,8 @@ export interface BashOperations {
 		cwd: string,
 		options: {
 			onData: (data: Buffer) => void;
+			/** 单独追踪 stderr 数据（额外回调，不替代 onData） */
+			onStderr?: (data: Buffer) => void;
 			signal?: AbortSignal;
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
@@ -56,7 +82,7 @@ export interface BashOperations {
  * Default bash operations using local shell
  */
 const defaultBashOperations: BashOperations = {
-	exec: (command, cwd, { onData, signal, timeout, env }) => {
+	exec: (command, cwd, { onData, onStderr, signal, timeout, env }) => {
 		return new Promise((resolve, reject) => {
 			const { shell, args } = getShellConfig();
 
@@ -90,7 +116,10 @@ const defaultBashOperations: BashOperations = {
 				child.stdout.on("data", onData);
 			}
 			if (child.stderr) {
-				child.stderr.on("data", onData);
+				child.stderr.on("data", (data: Buffer) => {
+					onData(data);
+					onStderr?.(data);
+				});
 			}
 
 			// Handle shell spawn errors
@@ -195,6 +224,11 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
 				// Keep more than we need so we have enough for truncation
 				const maxChunksBytes = DEFAULT_MAX_BYTES * 2;
 
+				// 单独追踪 stderr（用于截断时优先保留错误信息）
+				const stderrChunks: Buffer[] = [];
+				let stderrBytes = 0;
+				const maxStderrBytes = Math.floor(DEFAULT_MAX_BYTES * 0.3); // stderr 预算：30%
+
 				const handleData = (data: Buffer) => {
 					totalBytes += data.length;
 
@@ -238,8 +272,19 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
 					}
 				};
 
+				const handleStderr = (data: Buffer) => {
+					// 追踪 stderr 数据（滚动缓冲区，保留最新的 30% 预算）
+					stderrChunks.push(data);
+					stderrBytes += data.length;
+					while (stderrBytes > maxStderrBytes && stderrChunks.length > 1) {
+						const removed = stderrChunks.shift()!;
+						stderrBytes -= removed.length;
+					}
+				};
+
 				ops.exec(spawnContext.command, spawnContext.cwd, {
 					onData: handleData,
+					onStderr: handleStderr,
 					signal,
 					timeout,
 					env: spawnContext.env,
@@ -262,6 +307,21 @@ export function createBashTool(cwd: string, options?: BashToolOptions): AgentToo
 						let details: BashToolDetails | undefined;
 
 						if (truncation.truncated) {
+							// 智能 stderr 优先：当输出被截断时，检查 stderr 是否已在 tail 中
+							// 如果 stderr 有内容且未完全包含在 tail 中，将其作为头部添加
+							const stderrText = Buffer.concat(stderrChunks).toString("utf-8").trim();
+							if (stderrText) {
+								const stderrInTail = isStderrVisibleInTail(stderrText, outputText);
+								if (!stderrInTail) {
+									// stderr 未完全出现在 tail 中，添加 stderr 头部
+									const stderrTruncation = truncateTail(stderrText, {
+										maxBytes: maxStderrBytes,
+										maxLines: Math.floor(DEFAULT_MAX_LINES * 0.3),
+									});
+									outputText = `[stderr]\n${stderrTruncation.content}\n[/stderr]\n\n${outputText}`;
+								}
+							}
+
 							details = {
 								truncation,
 								fullOutputPath: tempFilePath,

@@ -10,6 +10,7 @@ export {
 	loadExtensions,
 } from "./loader.js";
 export type {
+	ContextTransformEntry,
 	ExtensionErrorListener,
 	ForkHandler,
 	NavigateTreeHandler,

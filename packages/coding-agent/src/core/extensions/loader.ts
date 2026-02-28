@@ -30,6 +30,7 @@ import type {
 	ExtensionAPI,
 	ExtensionFactory,
 	ExtensionRuntime,
+	HandlerFn,
 	LoadExtensionsResult,
 	MessageRenderer,
 	ProviderConfig,
@@ -98,8 +99,6 @@ function resolvePath(extPath: string, cwd: string): string {
 	return path.resolve(cwd, expanded);
 }
 
-type HandlerFn = (...args: unknown[]) => Promise<unknown>;
-
 /**
  * Create a runtime with throwing stubs for action methods.
  * Runner.bindCore() replaces these with real implementations.
@@ -151,7 +150,10 @@ function createExtensionAPI(
 ): ExtensionAPI {
 	const api = {
 		// Registration methods - write to extension
-		on(event: string, handler: HandlerFn): void {
+		on(event: string, handler: HandlerFn, options?: { priority?: number }): void {
+			if (options?.priority !== undefined) {
+				handler.__priority = options.priority;
+			}
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);

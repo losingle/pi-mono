@@ -64,16 +64,50 @@ export interface FuzzyMatchResult {
 	usedFuzzyMatch: boolean;
 	/**
 	 * The content to use for replacement operations.
-	 * When exact match: original content. When fuzzy match: normalized content.
+	 * Always the original content — fuzzy match positions are mapped back to original space,
+	 * 避免对编辑区域外的 Unicode 字符（smart quotes、中文等）产生副作用。
 	 */
 	contentForReplacement: string;
 }
 
 /**
+ * 构建从 normalizeForFuzzyMatch 输出位置到原始内容位置的映射表。
+ *
+ * normalizeForFuzzyMatch 的两类操作：
+ * 1. trimEnd（每行移除尾部空白）→ 改变字符串长度
+ * 2. Unicode 字符替换（smart quotes/dashes/spaces → ASCII）→ 1:1 不改变长度
+ *
+ * 映射表: posMap[normalizedPos] = originalPos
+ */
+function buildNormToOrigPositionMap(content: string): number[] {
+	const map: number[] = [];
+	const lines = content.split("\n");
+	let origPos = 0;
+
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+		const trimmedLen = line.trimEnd().length;
+
+		// 逐字符映射 trimmed 部分（1:1 Unicode 替换不影响位置）
+		for (let j = 0; j < trimmedLen; j++) {
+			map.push(origPos + j);
+		}
+
+		// 映射换行符（非最后一行）
+		if (i < lines.length - 1) {
+			map.push(origPos + line.length); // \n 在原始内容中的位置
+		}
+
+		origPos += line.length + (i < lines.length - 1 ? 1 : 0);
+	}
+
+	return map;
+}
+
+/**
  * Find oldText in content, trying exact match first, then fuzzy match.
- * When fuzzy matching is used, the returned contentForReplacement is the
- * fuzzy-normalized version of the content (trailing whitespace stripped,
- * Unicode quotes/dashes normalized to ASCII).
+ * 模糊匹配在规范化空间中查找，但将匹配位置映射回原始内容，
+ * 避免对编辑区域外的 Unicode 字符产生副作用。
  */
 export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult {
 	// Try exact match first
@@ -88,7 +122,7 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 		};
 	}
 
-	// Try fuzzy match - work entirely in normalized space
+	// Try fuzzy match - 在规范化空间中查找
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
 	const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
@@ -103,15 +137,19 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 		};
 	}
 
-	// When fuzzy matching, we work in the normalized space for replacement.
-	// This means the output will have normalized whitespace/quotes/dashes,
-	// which is acceptable since we're fixing minor formatting differences anyway.
+	// 将规范化空间的匹配位置映射回原始内容
+	const posMap = buildNormToOrigPositionMap(content);
+	const origStart = posMap[fuzzyIndex];
+	// 用 lastMatchedChar + 1 计算结束位置，避免在行尾边界处产生歧义
+	const fuzzyEnd = fuzzyIndex + fuzzyOldText.length;
+	const origEnd = fuzzyEnd > 0 && fuzzyEnd <= posMap.length ? posMap[fuzzyEnd - 1] + 1 : content.length;
+
 	return {
 		found: true,
-		index: fuzzyIndex,
-		matchLength: fuzzyOldText.length,
+		index: origStart,
+		matchLength: origEnd - origStart,
 		usedFuzzyMatch: true,
-		contentForReplacement: fuzzyContent,
+		contentForReplacement: content, // 返回原始内容，保留所有 Unicode 字符
 	};
 }
 
@@ -286,7 +324,7 @@ export async function computeEditDiff(
 		}
 
 		// Compute the new content using the matched position
-		// When fuzzy matching was used, contentForReplacement is the normalized version
+		// contentForReplacement 始终是原始内容（fuzzy match 的位置已映射回原始空间）
 		const baseContent = matchResult.contentForReplacement;
 		const newContent =
 			baseContent.substring(0, matchResult.index) +

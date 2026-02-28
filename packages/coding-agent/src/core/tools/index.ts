@@ -57,6 +57,12 @@ export {
 	readTool,
 } from "./read.js";
 export {
+	createSessionSearchTool,
+	type SessionSearchMatch,
+	type SessionSearchToolDetails,
+	type SessionSearchToolInput,
+} from "./session-search.js";
+export {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	formatSize,

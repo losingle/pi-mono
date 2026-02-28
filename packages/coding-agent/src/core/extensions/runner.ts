@@ -49,6 +49,15 @@ import type {
 	UserBashEventResult,
 } from "./types.js";
 
+/** emitContext 每个 handler 的变换记录 */
+export interface ContextTransformEntry {
+	extensionPath: string;
+	messagesBefore: number;
+	messagesAfter: number;
+	delta: number;
+	error?: string;
+}
+
 // Keybindings for these actions cannot be overridden by extensions
 const RESERVED_ACTIONS_FOR_EXTENSION_CONFLICTS: ReadonlyArray<KeyAction> = [
 	"interrupt",
@@ -217,6 +226,8 @@ export class ExtensionRunner {
 	private shutdownHandler: ShutdownHandler = () => {};
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
+	/** emitContext 各 handler 的变换记录（每次调用时刷新） */
+	private contextTransformLog: ContextTransformEntry[] = [];
 
 	constructor(
 		extensions: Extension[],
@@ -629,11 +640,23 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let result: ToolCallEventResult | undefined;
 
+		// 收集所有 handler 并按 priority 降序排列（高优先级先执行）
+		const allHandlers: Array<{
+			handler: (...args: unknown[]) => Promise<unknown>;
+			ext: Extension;
+			priority: number;
+		}> = [];
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;
-
 			for (const handler of handlers) {
+				allHandlers.push({ handler, ext, priority: handler.__priority ?? 0 });
+			}
+		}
+		allHandlers.sort((a, b) => b.priority - a.priority);
+
+		for (const { handler, ext } of allHandlers) {
+			try {
 				const handlerResult = await handler(event, ctx);
 
 				if (handlerResult) {
@@ -642,6 +665,15 @@ export class ExtensionRunner {
 						return result;
 					}
 				}
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				const stack = err instanceof Error ? err.stack : undefined;
+				this.emitError({
+					extensionPath: ext.path,
+					event: "tool_call",
+					error: message,
+					stack,
+				});
 			}
 		}
 
@@ -680,18 +712,30 @@ export class ExtensionRunner {
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
 		const ctx = this.createContext();
 		let currentMessages = structuredClone(messages);
+		this.contextTransformLog = [];
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("context");
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
+				const beforeCount = currentMessages.length;
 				try {
 					const event: ContextEvent = { type: "context", messages: currentMessages };
 					const handlerResult = await handler(event, ctx);
 
 					if (handlerResult && (handlerResult as ContextEventResult).messages) {
 						currentMessages = (handlerResult as ContextEventResult).messages!;
+					}
+
+					const afterCount = currentMessages.length;
+					if (afterCount !== beforeCount) {
+						this.contextTransformLog.push({
+							extensionPath: ext.path,
+							messagesBefore: beforeCount,
+							messagesAfter: afterCount,
+							delta: afterCount - beforeCount,
+						});
 					}
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
@@ -702,11 +746,23 @@ export class ExtensionRunner {
 						error: message,
 						stack,
 					});
+					this.contextTransformLog.push({
+						extensionPath: ext.path,
+						messagesBefore: beforeCount,
+						messagesAfter: beforeCount,
+						delta: 0,
+						error: message,
+					});
 				}
 			}
 		}
 
 		return currentMessages;
+	}
+
+	/** 获取最近一次 emitContext 的变换日志 */
+	getContextTransformLog(): ContextTransformEntry[] {
+		return this.contextTransformLog;
 	}
 
 	async emitBeforeAgentStart(
