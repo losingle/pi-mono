@@ -5,7 +5,7 @@ import type {
 	ToolCall,
 	ToolResultMessage as ToolResultMessageType,
 	UserMessage as UserMessageType,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai";
 import { html, LitElement, type TemplateResult } from "lit";
 import { customElement, property } from "lit/decorators.js";
 import { renderTool } from "../tools/index.js";
@@ -13,7 +13,7 @@ import type { Attachment } from "../utils/attachment-utils.js";
 import { formatUsage } from "../utils/format.js";
 import { i18n } from "../utils/i18n.js";
 import "./ThinkingBlock.js";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 
 export type UserMessageWithAttachments = {
 	role: "user-with-attachments";
@@ -32,7 +32,7 @@ export interface ArtifactMessage {
 	timestamp: string;
 }
 
-declare module "@mariozechner/pi-agent-core" {
+declare module "@earendil-works/pi-agent-core" {
 	interface CustomAgentMessages {
 		"user-with-attachments": UserMessageWithAttachments;
 		artifact: ArtifactMessage;
@@ -114,7 +114,7 @@ export class AssistantMessage extends LitElement {
 				);
 			} else if (chunk.type === "toolCall") {
 				if (!this.hideToolCalls) {
-					const tool = this.tools?.find((t) => t.name === chunk.name);
+					const tool = this.tools?.find((t: any) => t.name === chunk.name);
 					const pending = this.pendingToolCalls?.has(chunk.id) ?? false;
 					const result = this.toolResultsById?.get(chunk.id);
 					// Skip rendering pending tool calls when hidePendingToolCalls is true
@@ -242,7 +242,7 @@ export class ToolMessage extends LitElement {
 	}
 
 	override render() {
-		const toolName = this.tool?.name || this.toolCall.name;
+		const toolName = (this.tool as any)?.name || this.toolCall.name;
 
 		// Render tool content (renderer handles errors and styling)
 		const result: ToolResultMessageType<any> | undefined = this.aborted
@@ -296,8 +296,8 @@ export class AbortedMessage extends LitElement {
 // Default Message Transformer
 // ============================================================================
 
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Message } from "@mariozechner/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
 
 /**
  * Convert attachments to content blocks for LLM.

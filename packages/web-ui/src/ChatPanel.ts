@@ -2,7 +2,7 @@ import { Badge } from "@mariozechner/mini-lit/dist/Badge.js";
 import { html, LitElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import "./components/AgentInterface.js";
-import type { Agent, AgentTool } from "@mariozechner/pi-agent-core";
+import type { Agent, AgentTool } from "@earendil-works/pi-agent-core";
 import type { AgentInterface } from "./components/AgentInterface.js";
 import { ArtifactsRuntimeProvider } from "./components/sandbox/ArtifactsRuntimeProvider.js";
 import { AttachmentsRuntimeProvider } from "./components/sandbox/AttachmentsRuntimeProvider.js";
@@ -97,7 +97,7 @@ export class ChatPanel extends LitElement {
 			const attachments: Attachment[] = [];
 			for (const message of this.agent!.state.messages) {
 				if (message.role === "user-with-attachments") {
-					message.attachments?.forEach((a) => {
+					message.attachments?.forEach((a: any) => {
 						attachments.push(a);
 					});
 				}

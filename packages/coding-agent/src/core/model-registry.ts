@@ -17,8 +17,8 @@ import {
 	registerApiProvider,
 	resetApiProviders,
 	type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
-import { registerOAuthProvider, resetOAuthProviders } from "@mariozechner/pi-ai/oauth";
+} from "@earendil-works/pi-ai";
+import { registerOAuthProvider, resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { type Static, Type } from "typebox";
@@ -26,6 +26,7 @@ import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
 import { getAgentDir } from "../config.js";
 import type { AuthStatus, AuthStorage } from "./auth-storage.js";
+import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.js";
 import {
 	clearConfigValueCache,
 	resolveConfigValueOrThrow,
@@ -79,20 +80,21 @@ const VercelGatewayRoutingSchema = Type.Object({
 	order: Type.Optional(Type.Array(Type.String())),
 });
 
-// Schema for OpenAI compatibility settings
-const ReasoningEffortMapSchema = Type.Object({
-	minimal: Type.Optional(Type.String()),
-	low: Type.Optional(Type.String()),
-	medium: Type.Optional(Type.String()),
-	high: Type.Optional(Type.String()),
-	xhigh: Type.Optional(Type.String()),
+// Schema for thinking level support and provider-specific values
+const ThinkingLevelMapValueSchema = Type.Union([Type.String(), Type.Null()]);
+const ThinkingLevelMapSchema = Type.Object({
+	off: Type.Optional(ThinkingLevelMapValueSchema),
+	minimal: Type.Optional(ThinkingLevelMapValueSchema),
+	low: Type.Optional(ThinkingLevelMapValueSchema),
+	medium: Type.Optional(ThinkingLevelMapValueSchema),
+	high: Type.Optional(ThinkingLevelMapValueSchema),
+	xhigh: Type.Optional(ThinkingLevelMapValueSchema),
 });
 
 const OpenAICompletionsCompatSchema = Type.Object({
 	supportsStore: Type.Optional(Type.Boolean()),
 	supportsDeveloperRole: Type.Optional(Type.Boolean()),
 	supportsReasoningEffort: Type.Optional(Type.Boolean()),
-	reasoningEffortMap: Type.Optional(ReasoningEffortMapSchema),
 	supportsUsageInStreaming: Type.Optional(Type.Boolean()),
 	maxTokensField: Type.Optional(Type.Union([Type.Literal("max_completion_tokens"), Type.Literal("max_tokens")])),
 	requiresToolResultName: Type.Optional(Type.Boolean()),
@@ -103,6 +105,7 @@ const OpenAICompletionsCompatSchema = Type.Object({
 		Type.Union([
 			Type.Literal("openai"),
 			Type.Literal("openrouter"),
+			Type.Literal("together"),
 			Type.Literal("deepseek"),
 			Type.Literal("zai"),
 			Type.Literal("qwen"),
@@ -140,6 +143,7 @@ const ModelDefinitionSchema = Type.Object({
 	api: Type.Optional(Type.String({ minLength: 1 })),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
+	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(
 		Type.Object({
@@ -159,6 +163,7 @@ const ModelDefinitionSchema = Type.Object({
 const ModelOverrideSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
+	thinkingLevelMap: Type.Optional(ThinkingLevelMapSchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(
 		Type.Object({
@@ -177,6 +182,7 @@ const ModelOverrideSchema = Type.Object({
 type ModelOverride = Static<typeof ModelOverrideSchema>;
 
 const ProviderConfigSchema = Type.Object({
+	name: Type.Optional(Type.String({ minLength: 1 })),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	apiKey: Type.Optional(Type.String({ minLength: 1 })),
 	api: Type.Optional(Type.String({ minLength: 1 })),
@@ -206,6 +212,13 @@ function formatValidationPath(error: TLocalizedValidationError): string {
 	}
 	const path = error.instancePath.replace(/^\//, "").replace(/\//g, ".");
 	return path || "root";
+}
+
+/** Strip `//` line comments and trailing commas from JSON, leaving string literals untouched. */
+function stripJsonComments(input: string): string {
+	return input
+		.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*/g, (m) => (m[0] === '"' ? m : ""))
+		.replace(/"(?:\\.|[^"\\])*"|,(\s*[}\]])/g, (m, tail) => tail ?? (m[0] === '"' ? m : ""));
 }
 
 /** Provider override config (baseUrl, compat) without request auth/headers */
@@ -286,6 +299,9 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 	// Simple field overrides
 	if (override.name !== undefined) result.name = override.name;
 	if (override.reasoning !== undefined) result.reasoning = override.reasoning;
+	if (override.thinkingLevelMap !== undefined) {
+		result.thinkingLevelMap = { ...model.thinkingLevelMap, ...override.thinkingLevelMap };
+	}
 	if (override.input !== undefined) result.input = override.input as ("text" | "image")[];
 	if (override.contextWindow !== undefined) result.contextWindow = override.contextWindow;
 	if (override.maxTokens !== undefined) result.maxTokens = override.maxTokens;
@@ -442,7 +458,7 @@ export class ModelRegistry {
 
 		try {
 			const content = readFileSync(modelsJsonPath, "utf-8");
-			const parsed = JSON.parse(content) as unknown;
+			const parsed = JSON.parse(stripJsonComments(content)) as unknown;
 
 			if (!validateModelsConfig.Check(parsed)) {
 				const errors =
@@ -579,6 +595,7 @@ export class ModelRegistry {
 					provider: providerName,
 					baseUrl,
 					reasoning: modelDef.reasoning ?? false,
+					thinkingLevelMap: modelDef.thinkingLevelMap,
 					input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
 					cost: modelDef.cost ?? defaultCost,
 					contextWindow: modelDef.contextWindow ?? 128000,
@@ -728,6 +745,22 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Get display name for a provider.
+	 */
+	getProviderDisplayName(provider: string): string {
+		const registeredProvider = this.registeredProviders.get(provider);
+		const oauthProvider = this.authStorage.getOAuthProviders().find((p) => p.id === provider);
+
+		return (
+			registeredProvider?.name ??
+			registeredProvider?.oauth?.name ??
+			oauthProvider?.name ??
+			BUILT_IN_PROVIDER_DISPLAY_NAMES[provider] ??
+			provider
+		);
+	}
+
+	/**
 	 * Get API key for a provider.
 	 */
 	async getApiKeyForProvider(provider: string): Promise<string | undefined> {
@@ -858,8 +891,9 @@ export class ModelRegistry {
 					name: modelDef.name,
 					api: api as Api,
 					provider: providerName,
-					baseUrl: config.baseUrl!,
+					baseUrl: modelDef.baseUrl ?? config.baseUrl!,
 					reasoning: modelDef.reasoning,
+					thinkingLevelMap: modelDef.thinkingLevelMap,
 					input: modelDef.input as ("text" | "image")[],
 					cost: modelDef.cost,
 					contextWindow: modelDef.contextWindow,
@@ -893,6 +927,7 @@ export class ModelRegistry {
  * Input type for registerProvider API.
  */
 export interface ProviderConfigInput {
+	name?: string;
 	baseUrl?: string;
 	apiKey?: string;
 	api?: Api;
@@ -907,6 +942,7 @@ export interface ProviderConfigInput {
 		api?: Api;
 		baseUrl?: string;
 		reasoning: boolean;
+		thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 		input: ("text" | "image")[];
 		cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
 		contextWindow: number;

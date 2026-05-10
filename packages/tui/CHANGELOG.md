@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [0.74.0] - 2026-05-07
+
+## [0.73.1] - 2026-05-07
+
+### Fixed
+
+- Fixed wrapped OSC 8 hyperlinks to preserve BEL terminators so OAuth login URLs remain clickable on every wrapped line.
+- Fixed Kitty inline image redraws to stay within TUI-owned terminal regions and avoid writing below the active viewport.
+- Fixed Kitty inline image rendering by letting the terminal allocate image ids and bounding parsed image ids to valid values.
+- Fixed inline image capability detection to disable inline images in cmux terminals.
+
+## [0.73.0] - 2026-05-04
+
+### Fixed
+
+- Fixed fuzzy ranking to prioritize exact matches in selector and autocomplete results.
+
+## [0.72.1] - 2026-05-02
+
+## [0.72.0] - 2026-05-01
+
+## [0.71.1] - 2026-05-01
+
+## [0.71.0] - 2026-04-30
+
+### Fixed
+
+- Fixed `ProcessTerminal` to fall back to `COLUMNS` and `LINES` before defaulting to 80x24 dimensions ([#4004](https://github.com/badlogic/pi-mono/issues/4004))
+- Fixed editor rendering artifacts for Thai Sara Am and Lao AM vowel characters ([#3904](https://github.com/badlogic/pi-mono/issues/3904))
+
 ## [0.70.6] - 2026-04-28
 
 ## [0.70.5] - 2026-04-27

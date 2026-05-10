@@ -1,6 +1,5 @@
+import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { i18n } from "@mariozechner/mini-lit";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { ToolResultMessage } from "@mariozechner/pi-ai";
 import { html } from "lit";
 import { createRef, ref } from "lit/directives/ref.js";
 import { Code } from "lucide";
@@ -125,10 +124,7 @@ interface JavaScriptReplResult {
 	}>;
 }
 
-export function createJavaScriptReplTool(): AgentTool<typeof javascriptReplSchema, JavaScriptReplToolResult> & {
-	runtimeProvidersFactory?: () => SandboxRuntimeProvider[];
-	sandboxUrlProvider?: () => string;
-} {
+export function createJavaScriptReplTool(): any {
 	return {
 		label: "JavaScript REPL",
 		name: "javascript_repl",
@@ -137,8 +133,8 @@ export function createJavaScriptReplTool(): AgentTool<typeof javascriptReplSchem
 		get description() {
 			const runtimeProviderDescriptions =
 				this.runtimeProvidersFactory?.()
-					.map((d) => d.getDescription())
-					.filter((d) => d.trim().length > 0) || [];
+					.map((d: any) => d.getDescription())
+					.filter((d: any) => d.trim().length > 0) || [];
 			return JAVASCRIPT_REPL_TOOL_DESCRIPTION(runtimeProviderDescriptions);
 		},
 		parameters: javascriptReplSchema,
